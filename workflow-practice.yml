@@ -1,0 +1,143 @@
+# This is the name of the workflow, which will show up in the GitHub Actions UI
+name: Deploy node.js app
+
+# =============================================================================================
+# ======================================== ON TRIGGERS ========================================
+# =============================================================================================
+
+# This "on" will trigger workflows
+on:
+# This push will trigger the workflow when code is pushed to the specified branches
+  push:
+    branches:
+      - main
+      - stage
+      - qa
+
+# This pull_request will trigger the workflow when a pull request is opened, synchronized, or reopened against the specified branches
+  pull_request:
+    branches:
+      - main
+      - stage
+      - qa
+
+# This schedule will trigger the workflow based on a cron expression
+  schedule:
+    - cron: '0 0 * * *' # This will trigger the workflow every day at midnight (UTC)
+
+# This allows you to manually trigger the workflow from the GitHub Actions UI
+  workflow_dispatch:
+
+# =============================================================================================
+# ======================================== JOBS ===============================================
+# =============================================================================================
+
+# 1) Job is the main component of a workflow.
+# 2) A workflow can have one or more jobs, and each job runs in a runner environment.
+# 3) Jobs can run sequentially or in parallel, depending on how you configure them.
+# 4) Each job contains a series of steps that define the tasks to be performed.
+
+jobs:
+
+# 1) This "deploy" is just a label.
+# 2) We can have multiple jobs in a workflow, and each job can have its own name.
+# 3) The name is used to identify the job in the GitHub Actions UI and in logs.
+# 4) It can be anything you want, but it's good practice to choose a descriptive name that reflects the purpose of the job.
+  deploy:
+  # Meaning:
+    # 1) GitHub creates a temporary virtual machine
+    # 2) This VM runs your job
+    # 3) ubuntu-latest = Linux machine
+  # Other options are:
+    # 1) windows-latest (use for: .NET applications & Desktop apps)
+    # 2) macos-latest (use for: iOS apps & macOS apps)
+  # Simple meaning are Where your code will run
+  # We use "ubuntu-latest" as run machine because:
+    # 1) Fastest startup
+    # 2) Cheapest for GitHub
+    # 3) Most tutorials use it
+    # 4) Most servers run Linux
+    # 5) Most Docker deployments use Linux
+    # 6) For a Node.js, Laravel, Docker, React, Next.js, Django, or typical VPS deployment project Use ubuntu-latest:
+    runs-on: ubuntu-latest
+
+    # steps are the actual commands that will be executed in the job. Each step can run a command, execute a script, or use an action.
+    steps:
+      # This - means a new step inside the job.
+      # The name is just a label for the step, which will show up in the GitHub Actions UI and in logs. It helps to identify what the step is doing.
+      - name: Resolve deployment environment
+        # "id" is used to give an identifier to the step, which can be referenced in later steps. This is useful for sharing data between steps.
+        id: variables
+        # "run" is used to execute shell commands directly in the step.
+        # You can write any command that you would normally run in a terminal.
+        # The output of these commands can be captured and used in later steps.
+        # "|" allows you to write multi-line commands in a more readable format.
+        run: |
+          # This step is used to determine the deployment environment based on the branch that triggered the workflow.
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            # If the branch is "main", we set the deployment environment to "prod" (production).
+            echo "DEPLOY_ENV=prod" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_name }}" = "stage" ]; then
+            # If the branch is "stage", we set the deployment environment to "stage" (staging).
+            echo "DEPLOY_ENV=stage" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_name }}" = "qa" ]; then
+            # If the branch is "qa", we set the deployment environment to "qa".
+            echo "DEPLOY_ENV=qa" >> $GITHUB_OUTPUT
+          else
+            # If the branch is none of the above, we default to "dev" (development).
+            echo "DEPLOY_ENV=dev" >> $GITHUB_OUTPUT
+          # "fi" means "end of if" and is used to close the if statement in shell scripting.
+          fi
+
+      - name: Deploy to VPS
+        # "uses" means use an existing GitHub Action instead of writing commands yourself.
+        # This appleboy/ssh-action@v1.0.3 is a third-party GitHub Action that allows you to execute SSH commands on a remote server.
+        # It is commonly used for deploying applications to a VPS (Virtual Private Server) or any remote server that supports SSH access.
+        uses: appleboy/ssh-action@v1.0.3
+        # with is used to pass parameters to the action. Each action has its own set of parameters that you can configure.
+        with:
+          # These parameters are specific to the appleboy/ssh-action and are used to establish an SSH connection and execute commands on the remote server.
+          host: ${{ secrets.VPS_HOST }} # The IP address or hostname of your VPS. It is stored as a secret in GitHub for security reasons.
+          username: ${{ secrets.VPS_USERNAME }} # The SSH username for your VPS. It is also stored as a secret in GitHub.
+          key: ${{ secrets.VPS_SSH_KEY }} # The private SSH key used for authentication. This should be the private key corresponding to the public key you have added to your VPS. It is stored as a secret in GitHub.
+          port: 22
+          timeout: 60s
+          command_timeout: 40m
+          script: |
+            # "set -e" is a shell command that tells the shell to exit immediately if any command exits with a non-zero status (indicating an error).
+            # This is useful in deployment scripts to ensure that if any step fails, the entire deployment process stops, preventing further potentially harmful actions from being executed.
+            set -e
+
+            DEPLOY_ENV="${{ steps.variables.outputs.DEPLOY_ENV }}"
+            APP_NAME="coyote-nestjs-backend-$DEPLOY_ENV"
+            DEPLOY_DIR="$HOME/$APP_NAME"
+
+            echo "=== Deploying $APP_NAME to $DEPLOY_DIR ==="
+
+            # ── Step 1: System packages ──────────────────────────────────────
+              # "sudo" → runs command as administrator (root privileges)
+              # "apt-get" → package manager for Debian-based Linux distributions (like Ubuntu)
+              # "update" → updates the list of available packages and their versions, but does not install or upgrade any packages
+              # "-y" → automatically answer "yes" to prompts (use with caution)
+              # without below command, you might install outdated versions or get “package not found” errors.
+            sudo apt-get update -y
+              # "nginx" → web server that can serve static files and reverse proxy to your Node.js app
+              # "curl" → command-line tool for transferring data with URLs, often used to download
+              # "certbot" → tool for obtaining and renewing SSL certificates from Let's Encrypt
+              # "python3-certbot-nginx" → Certbot plugin for Nginx, allows Certbot to automatically configure SSL for your Nginx server
+              # This installs multiple software packages in one go.
+            sudo apt-get install -y git nginx curl certbot python3-certbot-nginx
+
+            # ── Step 2: Node.js v22 ──────────────────────────────────────────
+            if ! command -v node &>/dev/null || [[ "$(node --version)" < "v22" ]]; then
+              echo "Installing Node.js v22..."
+              curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+
+
+
+# This is the name of the job, which will show up in the GitHub Actions UI
+  build:
+    runs-on: ubuntu-latest
